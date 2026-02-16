@@ -11,8 +11,14 @@ settings = get_settings()
 
 openapi_tags = [
     {"name": "Auth", "description": "JWT authentication and user identity endpoints."},
-    {"name": "Student Applications", "description": "Student CRUD + submission workflow for applications."},
-    {"name": "Admin", "description": "Admin review endpoints: list/filter/detail, status transitions, notes."},
+    {
+        "name": "Student Applications",
+        "description": "Student CRUD + submission workflow for applications.",
+    },
+    {
+        "name": "Admin",
+        "description": "Admin review endpoints: list/filter/detail, status transitions, notes.",
+    },
     {"name": "Notifications", "description": "In-app notification log endpoints."},
 ]
 
@@ -28,8 +34,15 @@ app = FastAPI(
 )
 
 # CORS: env-driven (default '*', good for dev)
-allow_origins = [o.strip() for o in settings.cors_allow_origins.split(",")] if settings.cors_allow_origins else ["*"]
+allow_origins = (
+    [o.strip() for o in settings.cors_allow_origins.split(",")]
+    if settings.cors_allow_origins
+    else ["*"]
+)
 
+# Note: If allow_credentials=True, browsers will reject wildcard allow-origin ("*").
+# Starlette handles this by echoing back the request Origin for allowed requests
+# when "*" is configured; that's OK for local dev/preview.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -53,14 +66,35 @@ def health_check():
     summary="Database health check",
     description="Performs a simple DB connectivity check (SELECT 1).",
 )
-def db_health_check():
-    # Lazy import to avoid import cycles at module load time.
+def db_health_check() -> dict:
+    """DB connectivity check.
+
+    Returns:
+        {"ok": True} when DB is reachable.
+        {"ok": False, "error": "..."} with 500 status when unreachable.
+
+    This endpoint is intended for integration verification across containers and should
+    provide actionable error text when DB env/credentials are misconfigured.
+    """
+    from fastapi import HTTPException
     from sqlalchemy import text
+
+    # Lazy import to avoid import cycles at module load time.
     from src.api.core.db import SessionLocal
 
-    with SessionLocal() as db:
-        db.execute(text("SELECT 1"))
-    return {"ok": True}
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "ok": False,
+                "error": str(e),
+                "hint": "Check POSTGRES_URL / POSTGRES_USER / POSTGRES_PASSWORD and DB port.",
+            },
+        ) from e
 
 
 app.include_router(auth_router)

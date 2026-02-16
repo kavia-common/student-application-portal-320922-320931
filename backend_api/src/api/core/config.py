@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,39 @@ class Settings:
     postgres_port: str | None = None
     postgres_host: str | None = None
 
+    def _normalize_postgres_url(self, raw_url: str) -> str:
+        """
+        Normalize POSTGRES_URL to ensure it contains credentials if required.
+
+        Why:
+            In some preview environments the injected POSTGRES_URL might be a bare
+            URL like: postgresql://localhost:5000/mydb
+            In that case psycopg2 will try to connect with the OS user, which may not
+            exist as a DB role (e.g., role "kavia" does not exist).
+
+        Behavior:
+            - If POSTGRES_URL already contains username/password, return as-is.
+            - If it's missing credentials but POSTGRES_USER/POSTGRES_PASSWORD are set,
+              inject them.
+            - Preserve host/port/path/query/fragment.
+        """
+        parsed = urlparse(raw_url)
+        if parsed.scheme not in {"postgresql", "postgres"}:
+            return raw_url
+
+        if parsed.username:
+            return raw_url
+
+        if self.postgres_user and self.postgres_password:
+            # Rebuild netloc as: user:pass@host:port (host/port from parsed)
+            host = parsed.hostname or ""
+            port = f":{parsed.port}" if parsed.port else ""
+            netloc = f"{self.postgres_user}:{self.postgres_password}@{host}{port}"
+            rebuilt = parsed._replace(netloc=netloc)
+            return urlunparse(rebuilt)
+
+        return raw_url
+
     def sqlalchemy_database_uri(self) -> str:
         """
         Build the SQLAlchemy database URL.
@@ -29,7 +63,7 @@ class Settings:
         Prefers POSTGRES_URL if provided, otherwise constructs from component env vars.
         """
         if self.postgres_url:
-            return self.postgres_url
+            return self._normalize_postgres_url(self.postgres_url)
 
         # Fall back to component vars; require all to be present.
         missing = [
@@ -75,9 +109,7 @@ def get_settings() -> Settings:
     return Settings(
         jwt_secret=jwt_secret,
         jwt_algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
-        access_token_ttl_minutes=int(
-            os.getenv("ACCESS_TOKEN_TTL_MINUTES", str(60 * 24))
-        ),
+        access_token_ttl_minutes=int(os.getenv("ACCESS_TOKEN_TTL_MINUTES", str(60 * 24))),
         cors_allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*"),
         postgres_url=os.getenv("POSTGRES_URL"),
         postgres_user=os.getenv("POSTGRES_USER"),
